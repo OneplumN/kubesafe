@@ -37,6 +37,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
 
       - name: Build release archive
         env:
@@ -47,7 +48,7 @@ jobs:
           NPM_INSTALL_MODE: ci
         run: |
           DATE_VALUE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          VERSION="${VERSION#v}" DATE="${DATE_VALUE}" ./scripts/build-release.sh
+          VERSION="${VERSION#v}" DATE="${DATE_VALUE}" bash ./scripts/build-release.sh
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
