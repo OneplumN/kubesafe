@@ -27,6 +27,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
 
       - name: Install frontend dependencies
         working-directory: web
@@ -45,4 +46,4 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           SKIP_NPM_INSTALL: '1'
-        run: ./scripts/build-release.sh
+        run: bash ./scripts/build-release.sh
