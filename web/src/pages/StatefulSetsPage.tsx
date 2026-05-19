@@ -1,0 +1,406 @@
+import { App } from 'antd';
+import { type ProColumns } from '@ant-design/pro-components';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Alert, Button, InputNumber, Modal, Space, Tag, Typography } from 'antd';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+
+import {
+  buildStatefulSetRoute,
+  demoStatefulSets,
+  displayStatefulSetNamespace,
+  MetricValue,
+  statefulSetRestartTone,
+  statefulSetStatusColor,
+} from '../components/statefulset/statefulSetShared';
+import { ActionMenuButton } from '../components/workload/ActionMenuButton';
+import { ResourceYamlCreateButton } from '../components/workload/ResourceYamlCreateButton';
+import { ResourceYamlEditorModal } from '../components/workload/ResourceYamlEditorModal';
+import { ResourceListPage, type ResourceMetric } from '../components/resource-list/ResourceListPage';
+import {
+  type StatefulSetItem,
+  deleteStatefulSet,
+  getStatefulSetYaml,
+  getStatefulSets,
+  restartStatefulSet,
+  scaleStatefulSet,
+  updateStatefulSetYaml,
+} from '../services/cluster';
+import { useAppStore } from '../stores/appStore';
+import { confirmResourceDelete } from '../components/workload/deleteConfirmation';
+
+export function StatefulSetsPage() {
+  const { message, modal } = App.useApp();
+  const navigate = useNavigate();
+  const sessionMode = useAppStore((state) => state.sessionMode);
+  const currentNamespace = useAppStore((state) => state.namespace);
+  const [scaleTarget, setScaleTarget] = useState<StatefulSetItem>();
+  const [scaleValue, setScaleValue] = useState(1);
+  const [yamlEditTarget, setYamlEditTarget] = useState<StatefulSetItem>();
+
+  const statefulSetsQuery = useQuery({
+    queryKey: ['statefulsets', currentNamespace],
+    queryFn: () => getStatefulSets(currentNamespace),
+    enabled: sessionMode === 'token',
+  });
+  const useDemoData =
+    sessionMode === 'demo' ||
+    (sessionMode === 'token' && Boolean(statefulSetsQuery.error) && !statefulSetsQuery.data);
+  const allowOperations = sessionMode === 'token' && !useDemoData;
+
+  const demoItems = useMemo(() => {
+    const namespace = currentNamespace.trim();
+    return namespace === ''
+      ? demoStatefulSets
+      : demoStatefulSets.filter((item) => item.namespace === namespace);
+  }, [currentNamespace]);
+  const items = useDemoData ? demoItems : statefulSetsQuery.data ?? [];
+  const namespaceLabel = displayStatefulSetNamespace(currentNamespace);
+
+  const refreshStatefulSets = async () => {
+    await statefulSetsQuery.refetch();
+  };
+
+  const scaleMutation = useMutation({
+    mutationFn: ({ namespace, name, replicas }: { namespace: string; name: string; replicas: number }) =>
+      scaleStatefulSet(namespace, name, replicas),
+    onSuccess: async (result) => {
+      void message.success(result.message);
+      setScaleTarget(undefined);
+      await refreshStatefulSets();
+    },
+  });
+
+  const restartMutation = useMutation({
+    mutationFn: ({ namespace, name }: { namespace: string; name: string }) =>
+      restartStatefulSet(namespace, name),
+    onSuccess: async (result) => {
+      void message.success(result.message);
+      await refreshStatefulSets();
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: ({ namespace, name }: { namespace: string; name: string }) =>
+      deleteStatefulSet(namespace, name),
+    onSuccess: async (result) => {
+      void message.success(result.message);
+      setScaleTarget(undefined);
+      setYamlEditTarget(undefined);
+      await refreshStatefulSets();
+    },
+  });
+
+  const statefulSetYamlQuery = useQuery({
+    queryKey: ['statefulset-yaml', yamlEditTarget?.namespace, yamlEditTarget?.name],
+    queryFn: () => getStatefulSetYaml(yamlEditTarget!.namespace, yamlEditTarget!.name),
+    enabled: allowOperations && Boolean(yamlEditTarget),
+  });
+
+  const updateStatefulSetYamlMutation = useMutation({
+    mutationFn: ({ namespace, name, content }: { namespace: string; name: string; content: string }) =>
+      updateStatefulSetYaml(namespace, name, content),
+    onSuccess: (result) => {
+      void message.success(result.message);
+      void refreshStatefulSets();
+      void statefulSetYamlQuery.refetch();
+    },
+  });
+
+  const openScaleModal = (item: StatefulSetItem) => {
+    setScaleTarget(item);
+    setScaleValue(item.desiredReplicas);
+  };
+
+  const handleScaleSubmit = async () => {
+    if (!scaleTarget) {
+      return;
+    }
+
+    await scaleMutation.mutateAsync({
+      namespace: scaleTarget.namespace,
+      name: scaleTarget.name,
+      replicas: scaleValue,
+    });
+  };
+
+  const openRestartConfirm = (item: StatefulSetItem) => {
+    modal.confirm({
+      title: `重启 ${item.name} ?`,
+      content: '会通过滚动更新触发 StatefulSet Pod 重新创建。',
+      okText: '重启',
+      cancelText: '取消',
+      onOk: async () =>
+        restartMutation.mutateAsync({
+          namespace: item.namespace,
+          name: item.name,
+        }),
+    });
+  };
+
+  const openDeleteConfirm = (item: StatefulSetItem) => {
+    confirmResourceDelete({
+      resourceKind: 'StatefulSet',
+      namespace: item.namespace,
+      name: item.name,
+      impact:
+        'This removes the StatefulSet and terminates its managed Pods. PersistentVolumeClaims may remain and need separate cleanup.',
+      onConfirm: () =>
+        deleteMutation.mutateAsync({
+          namespace: item.namespace,
+          name: item.name,
+        }),
+    });
+  };
+
+  const metrics = useMemo<ResourceMetric[]>(() => {
+    const healthyCount = items.filter((item) => item.status === 'Healthy' || item.status === 'ScaledDown').length;
+    const totalPods = items.reduce((sum, item) => sum + item.podCount, 0);
+    const metricsReadyCount = items.filter((item) => item.metricsAvailable).length;
+    const restartCount = items.reduce((sum, item) => sum + item.restartCount, 0);
+
+    return [
+      {
+        label: 'StatefulSets',
+        value: items.length,
+        hint: `当前上下文: ${namespaceLabel}`,
+        tone: 'teal',
+      },
+      {
+        label: 'Healthy',
+        value: `${healthyCount}/${items.length}`,
+        hint: '按就绪副本与更新状态判断',
+        tone: 'blue',
+      },
+      {
+        label: 'Pods',
+        value: totalPods,
+        hint: `关联 Pod 总数，重启累计 ${restartCount}`,
+        tone: 'amber',
+      },
+      {
+        label: 'Metrics',
+        value: `${metricsReadyCount}/${items.length}`,
+        hint: 'StatefulSet 聚合 CPU / Memory 覆盖度',
+        tone: 'slate',
+      },
+    ];
+  }, [items, namespaceLabel]);
+
+  const columns: ProColumns<StatefulSetItem>[] = [
+    {
+      title: 'StatefulSet',
+      dataIndex: 'name',
+      key: 'name',
+      render: (_, item) => (
+        <Space direction="vertical" size={2}>
+          <Space size={6} wrap>
+            <Typography.Text strong>{item.name}</Typography.Text>
+            <Tag color="blue">{item.updateStrategy}</Tag>
+          </Space>
+          <Typography.Text type="secondary" className="text-xs">
+            {item.namespace} · {item.serviceName || '-'}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Status',
+      key: 'status',
+      width: 260,
+      render: (_, item) => (
+        <Space size={[6, 6]} wrap>
+          <Tag color={statefulSetStatusColor(item.status)}>{item.status}</Tag>
+          <Tag color={item.readyReplicas >= item.desiredReplicas ? 'green' : 'orange'}>
+            Ready {item.readyReplicas}/{item.desiredReplicas}
+          </Tag>
+          <Tag>{item.podManagementPolicy}</Tag>
+        </Space>
+      ),
+    },
+    {
+      title: 'CPU',
+      key: 'cpu',
+      width: 120,
+      render: (_, item) => <MetricValue available={item.metricsAvailable} value={item.cpuUsage} />,
+    },
+    {
+      title: 'Memory',
+      key: 'memory',
+      width: 140,
+      render: (_, item) => (
+        <MetricValue available={item.metricsAvailable} value={item.memoryUsage} />
+      ),
+    },
+    {
+      title: 'Restarts',
+      dataIndex: 'restartCount',
+      key: 'restartCount',
+      width: 110,
+      render: (value) => <Tag color={statefulSetRestartTone(value as number)}>{value}</Tag>,
+    },
+    {
+      title: 'Age',
+      dataIndex: 'age',
+      key: 'age',
+      width: 100,
+      render: (value) => value ?? '-',
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 124,
+      fixed: 'right',
+      render: (_, item) =>
+        allowOperations ? (
+          <ActionMenuButton
+            loading={restartMutation.isPending || deleteMutation.isPending}
+            menu={{
+              items: [
+                { key: 'open', label: 'Open' },
+                { key: 'scale', label: 'Scale' },
+                { key: 'edit-yaml', label: 'Edit YAML' },
+                { key: 'restart', label: <span className="text-amber-700">Restart</span> },
+                { key: 'delete', label: <span className="text-red-600">Delete</span> },
+              ],
+              onClick: ({ key, domEvent }) => {
+                domEvent.stopPropagation();
+                if (key === 'open') {
+                  navigate(buildStatefulSetRoute(item.namespace, item.name));
+                  return;
+                }
+                if (key === 'scale') {
+                  openScaleModal(item);
+                  return;
+                }
+                if (key === 'edit-yaml') {
+                  setYamlEditTarget(item);
+                  return;
+                }
+                if (key === 'restart') {
+                  openRestartConfirm(item);
+                  return;
+                }
+                if (key === 'delete') {
+                  openDeleteConfirm(item);
+                }
+              },
+            }}
+          />
+        ) : (
+          <Tag>{useDemoData ? 'Demo' : 'ReadOnly'}</Tag>
+        ),
+    },
+  ];
+
+  return (
+    <section className="space-y-5">
+      {sessionMode === 'token' && useDemoData ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="StatefulSet 数据加载失败，当前显示的是安全回退的演示数据。"
+        />
+      ) : null}
+
+      <ResourceListPage<StatefulSetItem>
+        title="StatefulSet 列表"
+        description="查看有状态副本的就绪情况、版本修订与聚合资源使用，点击行可查看详情。"
+        metrics={metrics}
+        dataSource={items}
+        columns={columns}
+        rowKey={(record) => `${record.namespace}/${record.name}`}
+        loading={sessionMode === 'token' && statefulSetsQuery.isLoading}
+        onRefresh={refreshStatefulSets}
+        toolbarExtra={
+          <Space size={8} wrap>
+            <Tag color="blue">当前上下文: {namespaceLabel}</Tag>
+            <ResourceYamlCreateButton
+              resourceKind="StatefulSet"
+              namespace={currentNamespace}
+              enabled={allowOperations}
+              disabledReason={useDemoData ? 'Live cluster access is unavailable.' : undefined}
+              onCreated={refreshStatefulSets}
+            />
+          </Space>
+        }
+        searchPlaceholder="搜索 StatefulSet、服务名、镜像、selector 或标签"
+        searchPredicate={(record, keyword) =>
+          record.name.toLowerCase().includes(keyword) ||
+          record.namespace.toLowerCase().includes(keyword) ||
+          record.serviceName.toLowerCase().includes(keyword) ||
+          record.status.toLowerCase().includes(keyword) ||
+          record.images.some((image) => image.toLowerCase().includes(keyword)) ||
+          record.selector.some((label) => label.toLowerCase().includes(keyword)) ||
+          record.labels.some((label) => label.toLowerCase().includes(keyword))
+        }
+        emptyDescription={`${namespaceLabel} 下没有可展示的 StatefulSet`}
+        onRow={(record) => ({
+          onClick: () => navigate(buildStatefulSetRoute(record.namespace, record.name)),
+          style: { cursor: 'pointer' },
+        })}
+      />
+
+      <Modal
+        title={
+          scaleTarget
+            ? `Scale StatefulSet / ${scaleTarget.namespace}/${scaleTarget.name}`
+            : 'Scale StatefulSet'
+        }
+        open={Boolean(scaleTarget)}
+        onCancel={() => setScaleTarget(undefined)}
+        onOk={() => void handleScaleSubmit()}
+        okText="确认"
+        cancelText="取消"
+        confirmLoading={scaleMutation.isPending}
+      >
+        <section className="space-y-4">
+          <Typography.Paragraph className="!mb-0 text-sm text-slate-500">
+            Adjust the StatefulSet replica target. Current value: {scaleTarget?.desiredReplicas ?? 0}.
+          </Typography.Paragraph>
+          <div>
+            <div className="mb-2 text-sm font-medium text-slate-700">Replicas</div>
+            <InputNumber
+              min={0}
+              precision={0}
+              value={scaleValue}
+              onChange={(value) => setScaleValue(value == null ? 0 : value)}
+              className="w-full"
+            />
+          </div>
+        </section>
+      </Modal>
+
+      <ResourceYamlEditorModal
+        open={Boolean(yamlEditTarget)}
+        title={
+          yamlEditTarget
+            ? `Edit StatefulSet YAML / ${yamlEditTarget.namespace}/${yamlEditTarget.name}`
+            : 'Edit StatefulSet YAML'
+        }
+        resourceKind="StatefulSet"
+        resourceLabel={yamlEditTarget ? `${yamlEditTarget.namespace}/${yamlEditTarget.name}` : '-'}
+        result={statefulSetYamlQuery.data}
+        loading={statefulSetYamlQuery.isFetching}
+        saving={updateStatefulSetYamlMutation.isPending}
+        error={statefulSetYamlQuery.error}
+        errorMessage="StatefulSet YAML 加载失败"
+        onClose={() => setYamlEditTarget(undefined)}
+        onRefresh={() => {
+          void statefulSetYamlQuery.refetch();
+        }}
+        onSave={(content) => {
+          if (!yamlEditTarget) {
+            return Promise.resolve();
+          }
+
+          return updateStatefulSetYamlMutation.mutateAsync({
+            namespace: yamlEditTarget.namespace,
+            name: yamlEditTarget.name,
+            content,
+          });
+        }}
+      />
+    </section>
+  );
+}

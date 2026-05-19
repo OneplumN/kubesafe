@@ -1,0 +1,35 @@
+[Unit]
+Description=kubesafe - Kubernetes Single Cluster Console
+Documentation=https://github.com/OneplumN/kubesafe
+After=network.target
+
+[Service]
+Type=simple
+User=kubesafe
+Group=kubesafe
+WorkingDirectory=/opt/kubesafe
+ExecStart=/opt/kubesafe/kubesafe
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kubesafe
+
+# Future online update flow relies on the binary being writable in place.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/kubesafe
+
+# Adjust these values for your target environment.
+Environment=HTTP_ADDR=:8080
+Environment=KUBESAFE_KUBECONFIG=/opt/kubesafe/config/kubeconfig
+# Environment=KUBESAFE_UPDATE_ENABLED=true
+# Environment=KUBESAFE_UPDATE_ALLOW_PRERELEASES=true
+# Environment=KUBESAFE_UPDATE_REPOSITORY=OneplumN/kubesafe
+# Environment=KUBESAFE_UPDATE_ALLOWED_SUBJECTS=system:serviceaccount:kube-system:kubesafe-dev
+Environment=KUBESAFE_UPDATE_TARGET_PATH=/opt/kubesafe/kubesafe
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Editor
+.idea/
+.vscode/
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+
+# Backend
+server/bin/
+server/dist/
+server/.cache/
+server/coverage/
+server/internal/web/dist/app/
+server/kubesafe
+
+# Go
+*.test
+*.out
+vendor/
+
+# Temporary files
+tmp/
+temp/
+
+# Local tooling artifacts
+.playwright-mcp/
+.gitnexus/
+graphify-out/
+._*
+overview-layout.png
+AI_HANDOFF_ANALYSIS.md
